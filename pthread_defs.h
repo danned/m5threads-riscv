@@ -99,14 +99,14 @@ typedef struct {
 #else /* __SIZEOF_PTHREAD_MUTEX_T defined */
 #define PTHREAD_MUTEX_T_COUNT __data.__count
 
-#define PTHREAD_RWLOCK_T_LOCK(rwlock)  (*(volatile int*)(&rwlock->__data.__lock))
-#define PTHREAD_RWLOCK_T_READERS(rwlock)  (*(volatile int*)(&rwlock->__data.__nr_readers))
-#define PTHREAD_RWLOCK_T_WRITER(rwlock)  (*(volatile int*)(&rwlock->__data.__writer))
+#define PTHREAD_RWLOCK_T_LOCK(rwlock)  (*(volatile int*)(&rwlock->__data.__pad3)) //- WARNING: signed -> unsigned.. might be problems
+#define PTHREAD_RWLOCK_T_READERS(rwlock)  (*(volatile int*)(&rwlock->__data.__readers))
+#define PTHREAD_RWLOCK_T_WRITER(rwlock)  (*(volatile int*)(&rwlock->__data.__cur_writer))
 
 #if defined(__GNUC__) && __GNUC__ >= 4
-#define PTHREAD_COND_T_FLAG(cond) (*(volatile int*)(&(cond->__data.__lock)))
-#define PTHREAD_COND_T_THREAD_COUNT(cond) (*(volatile int*)(&(cond-> __data.__futex)))
-#define PTHREAD_COND_T_COUNT_LOCK(cond) (*(volatile int*)(&(cond->__data.__nwaiters)))
+#define PTHREAD_COND_T_FLAG(cond) (*(volatile int*)(&(cond->__data.__g_signals[0]))) //- WARNING: signed -> unsigned.. might be problems
+#define PTHREAD_COND_T_THREAD_COUNT(cond) (*(volatile int*)(&(cond-> __data.__g_signals[1])))
+#define PTHREAD_COND_T_COUNT_LOCK(cond) (*(volatile int*)(&(cond->__data.__wrefs)))
 
 //For tree barriers
 //#define PTHREAD_BARRIER_T_NUM_THREADS(barrier)  (*((int*)(barrier->__size+(0*sizeof(int)))))

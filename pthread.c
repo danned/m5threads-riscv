@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <signal.h>
 #include <sys/errno.h>
+#define _USE_GNU
+#define _GNU_SOURCE
 #include <sched.h>
 #include <linux/sched.h>
 #include <sys/mman.h>
@@ -41,7 +43,15 @@
 #elif defined(__sparc)
   #include "spinlock_sparc.h"
 #elif defined (__arm__)
+extern int clone (int (*__fn) (void *__arg), void *__child_stack,
+		  int __flags, void *__arg, ...) __THROW;
+ //extern int clone(int (*fn)(void *), void *child_stack,int flags, void *arg);
   #include "spinlock_arm.h"
+#elif defined (__riscv)
+extern int clone (int (*__fn) (void *__arg), void *__child_stack,
+		  int __flags, void *__arg, ...) __THROW;
+ //extern int clone(int (*fn)(void *), void *child_stack,int flags, void *arg);
+  #include "spinlock_riscv.h"
 #else
   #error "spinlock routines not available for your arch!\n"
 #endif
@@ -53,7 +63,13 @@
 #define restrict 
 
 //64KB stack, change to your taste...
-#define CHILD_STACK_BITS 16
+#define CHILD_STACK_BITS 10
+//256 bytes stack
+//#define CHILD_STACK_BITS 8
+//65535 65kb
+
+//16777 215 16.777 Mb
+//#define CHILD_STACK_BITS 24
 #define CHILD_STACK_SIZE (1 << CHILD_STACK_BITS)
 
 //Debug macro
@@ -105,7 +121,7 @@ __thread uint32_t pthread_specifics_size = 0;
 
 /* Initialization, create/exit/join functions */
 
-// Search ELF segments, pull out TLS block info, campute thread block sizes
+// Search ELF segments, pull out TLS block info, compute thread block sizes
 static void populate_thread_block_info() {
   ElfW(Phdr) *phdr;
 
@@ -163,6 +179,7 @@ static void setup_thread_tls(void* th_block_addr) {
 
   /* Compute the (real) TCB offset */
   #if TLS_DTV_AT_TP
+  DEBUG("NPTL_TCBHEAD_T_SIZE: %d , NPTL_TCB_ALIGN: %d\n", NPTL_TCBHEAD_T_SIZE, NPTL_TCB_ALIGN);
   tcb_offset = roundup(NPTL_TCBHEAD_T_SIZE, NPTL_TCB_ALIGN);
   #elif TLS_TCB_AT_TP
   tcb_offset = roundup(thread_block_info.tls_memsz, NPTL_TCB_ALIGN);
@@ -182,17 +199,24 @@ static void setup_thread_tls(void* th_block_addr) {
   #else
   #error "TLS_TCB_AT_TP xor TLS_DTV_AT_TP must be defined"
   #endif
-
+  //DEBUG("tlsblock: %02x \n",*(char*)tlsblock);
+  //DEBUG("thread_block_info.tls_initimage: %02x \n",*(char*)(thread_block_info.tls_initimage));
+  //DDUMP(thread_block_info.tls_initimage, thread_block_info.tls_filesz);
   //DEBUG("Init TLS: Copying %d bytes from 0x%llx to 0x%llx\n", filesz, (uint64_t) initimage, (uint64_t) tls_start_ptr);
   memcpy (tls_start_ptr, thread_block_info.tls_initimage, thread_block_info.tls_filesz);
-
-  //Rest of tls vars are already cleared (mmap returns zeroed memory)
-
+/*
+  for(int i = 0; i < thread_block_info.tls_filesz; i++){
+  printf("%02x ",*(char*)(thread_block_info.tls_initimage +i));
+  printf("- %02x =",*(char*)(tls_start_ptr+i));
+  printf("%02x \n", (*(char*)(thread_block_info.tls_initimage +i) - *(char*)(tls_start_ptr+i)));
+}
+*/
   //Note: We don't care about DTV pointers for x86/SPARC -- they're never used in static mode
   /* Initialize the thread pointer.  */
-  #if TLS_DTV_AT_TP
+ #if TLS_DTV_AT_TP
   TLS_INIT_TP (tlsblock, 0);
   #elif TLS_TCB_AT_TP
+  //printf("1\n");
   TLS_INIT_TP ((char *) tlsblock + tcb_offset, 0);
   #else
   #error "TLS_TCB_AT_TP xor TLS_DTV_AT_TP must be defined"
@@ -205,22 +229,22 @@ int __nptl_nthreads = 32; //TODO: we don't really know...
 
 //Called at initialization. Sets up TLS for the main thread and populates thread_block_info, used in subsequent calls
 //Works with LinuxThreads and NPTL
+
 void __pthread_initialize_minimal() {
   __libc_multiple_threads = 1; //tell libc we're multithreaded (NPTL-specific)
   populate_thread_block_info();
   void* ptr = mmap(0, thread_block_info.total_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+#if !defined(__riscv)
   setup_thread_tls(ptr + sizeof(pthread_tcb_t));
+#endif
 }
 
-
 //Used by pthread_create to spawn child
-static int __pthread_trampoline(void* thr_ctrl) {
+int __pthread_trampoline(void* thr_ctrl) {
   //Set TLS up
   pthread_tcb_t* tcb = (pthread_tcb_t*) thr_ctrl; 
   setup_thread_tls(tcb->tls_start_addr);
   __tcb = tcb;
-  DEBUG("Child in trampoline, TID=%llx\n", tcb->tid);
-
   void* result = tcb->start_routine(tcb->arg);
   pthread_exit(result);
   assert(0); //should never be reached
@@ -331,28 +355,33 @@ void pthread_exit (void* status) {
     assert(0);*/
 }
 
-
 // mutex functions
-
 int pthread_mutex_init (pthread_mutex_t* mutex, const pthread_mutexattr_t* attr) {
-  DEBUG("%s: start\n", __FUNCTION__);
+    DEBUG("%s: start\n", __FUNCTION__);
     mutex->PTHREAD_MUTEX_T_COUNT = 0;
+   // arch_spinlock_t *l;
+	//l = (arch_spinlock_t*)&mutex->PTHREAD_MUTEX_T_COUNT;
+	//l->h.serving_now = 1;// start to serve number 1
+    //printf("serving start: %d\n", l->h.serving_now);
+	//mutex->PTHREAD_MUTEX_T_COUNT = 0;
     return 0;
 }
 
 int pthread_mutex_lock (pthread_mutex_t* lock) {
-  DEBUG("%s: start\n", __FUNCTION__);
+	DEBUG("%s: start\n", __FUNCTION__);
     PROFILE_LOCK_START(lock); 
     spin_lock((int*)&lock->PTHREAD_MUTEX_T_COUNT);
     PROFILE_LOCK_END(lock);
+	DEBUG("%s: end\n", __FUNCTION__);
     return 0;
 }
 
 int pthread_mutex_unlock (pthread_mutex_t* lock) {
-  DEBUG("%s: start\n", __FUNCTION__);
+	DEBUG("%s: start\n", __FUNCTION__);
     PROFILE_UNLOCK_START(lock);
     spin_unlock((int*)&lock->PTHREAD_MUTEX_T_COUNT);
     PROFILE_UNLOCK_END(lock);
+	DEBUG("%s: end\n", __FUNCTION__);
     return 0;
 }
 
@@ -370,6 +399,7 @@ int pthread_mutex_trylock (pthread_mutex_t* mutex) {
 	PROFILE_LOCK_END(mutex);
         return 0;
     }
+
     return EBUSY;
 }
 

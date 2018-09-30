@@ -38,6 +38,9 @@
 //  platform-specific 'tls.h')
 #if defined(__arm__)
 #define TLS_DTV_AT_TP 1
+#elif defined(__riscv)
+#define TLS_DTV_AT_TP	1
+#define TLS_TCB_AT_TP	0
 #else
 #define TLS_TCB_AT_TP 1
 #endif
@@ -213,8 +216,56 @@ typedef struct
 
 #define ASM_ARGS_1  ASM_ARGS_0, "r" (_a1)
 
+   
 # define TLS_INIT_TP(descr, secondcall) \
     INTERNAL_SYSCALL_ARM(set_tls, 0, 1, (descr))
+
+#elif defined(__riscv)
+
+# include <stdbool.h>
+/* Get system call information.  */
+/* The thread pointer tp points to the end of the TCB.
+   The pthread_descr structure is immediately in front of the TCB. */
+# define TLS_TCB_OFFSET	0
+
+/* The TP points to the start of the thread blocks.  */
+//- defined previously
+//-# define TLS_DTV_AT_TP	1
+//-# define TLS_TCB_AT_TP	0
+
+register void* __thread_self asm("tp");
+
+typedef union dtv
+{
+  size_t counter;
+  struct
+  {
+    void *val;
+    bool is_static;
+  } pointer;
+} dtv_t;
+
+typedef struct
+{
+  dtv_t *dtv;
+  void *private;
+} tcbhead_t;
+
+
+/* Alignment requirements for the TCB.  */
+# define TLS_TCB_ALIGN		NPTL_TCB_ALIGN
+/* This is the size we need before TCB - actually, it includes the TCB.  */
+# define TLS_PRE_TCB_SIZE \
+  (NPTL_TCB_SIZE						      \
+   + ((sizeof (tcbhead_t) + TLS_TCB_ALIGN - 1) & ~(TLS_TCB_ALIGN - 1)))
+
+/* Value passed to 'clone' for initialization of the thread register.  */
+# define TLS_DEFINE_INIT_TP(tp, pd) \
+  void *tp = (void *) (pd) + TLS_TCB_OFFSET + TLS_PRE_TCB_SIZE
+  
+/* Code to initially initialize the thread pointer. */
+# define TLS_INIT_TP(tcbp, X) \
+  ({ __thread_self = (char*)tcbp + TLS_TCB_OFFSET; NULL; })
 
 #else
   #error "No TLS defs for your architecture"
